@@ -1,208 +1,199 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Card, CardContent, CardFooter } from '@/components/ui/card'
+import { MapPin, ShoppingCart, Loader2 } from 'lucide-react'
 import Link from 'next/link'
-import { MapPin, Search, Zap, Heart, Loader2 } from 'lucide-react'
-import dynamic from 'next/dynamic'
-import LandDetailModal from '@/components/dashboard/land-detail-modal'
+import AuthHeader from '@/components/auth-header'
 
-const MapSection = dynamic(() => import('@/components/dashboard/map-section'), {
-  ssr: false,
-  loading: () => (
-    <div className="w-full h-96 bg-card rounded-lg flex items-center justify-center border border-border">
-      <div className="flex flex-col items-center gap-2">
-        <Loader2 className="h-6 w-6 text-accent animate-spin" />
-        <p className="text-muted-foreground text-sm">Loading map...</p>
-      </div>
-    </div>
-  ),
-})
+// --- BACKEND IMPORTS ---
+import { ethers } from 'ethers'
+import { 
+  LAND_REGISTRY_ADDRESS, 
+  LAND_REGISTRY_ABI,
+  MARKETPLACE_ADDRESS, 
+  MARKETPLACE_ABI 
+} from '@/lib/constants'
 
 export default function MarketplacePage() {
-  const [searchQuery, setSearchQuery] = useState('')
-  const [sortBy, setSortBy] = useState('recently-listed')
-  const [selectedLand, setSelectedLand] = useState<any>(null)
-  const [showDetails, setShowDetails] = useState(false)
+  const [items, setItems] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
+  const [walletAddress, setWalletAddress] = useState<string | null>(null)
+  const [buyingId, setBuyingId] = useState<number | null>(null) // Track buying state
 
-  const mockListings = [
-    {
-      id: 1,
-      name: "Manhattan Premium Parcel",
-      location: "New York, USA",
-      price: "$850,000",
-      area: "2,500 sq ft",
-      coordinates: { lat: 40.7128, lng: -74.006 },
-      status: "available" as const,
-      type: "commercial" as const,
-      listedDate: "2024-11-15",
-      description: "Prime Manhattan location with excellent development potential.",
-    },
-    {
-      id: 2,
-      name: "Brooklyn Heights Estate",
-      location: "New York, USA",
-      price: "$1,200,000",
-      area: "5,000 sq ft",
-      coordinates: { lat: 40.695, lng: -74.01 },
-      status: "available" as const,
-      type: "residential" as const,
-      listedDate: "2024-11-10",
-      description: "Beautiful Brooklyn Heights property with historic charm.",
-    },
-    {
-      id: 3,
-      name: "Queens Commercial Zone",
-      location: "New York, USA",
-      price: "$650,000",
-      area: "3,500 sq ft",
-      coordinates: { lat: 40.73, lng: -74.02 },
-      status: "available" as const,
-      type: "mixed-use" as const,
-      listedDate: "2024-11-12",
-      description: "Growing commercial zone with excellent rental income potential.",
-    },
-    {
-      id: 4,
-      name: "Downtown Residential Plot",
-      location: "New York, USA",
-      price: "$920,000",
-      area: "2,800 sq ft",
-      coordinates: { lat: 40.7, lng: -74.005 },
-      status: "available" as const,
-      type: "residential" as const,
-      listedDate: "2024-11-08",
-      description: "Modern downtown location perfect for new developments.",
-    },
-  ]
+  // --- 1. LOAD MARKETPLACE ITEMS ---
+  const loadMarketplace = async () => {
+    try {
+      // Use JsonRpcProvider for fast, stable reading
+      const provider = new ethers.JsonRpcProvider("http://127.0.0.1:8545");
+      
+      const marketContract = new ethers.Contract(MARKETPLACE_ADDRESS, MARKETPLACE_ABI, provider);
+      const landContract = new ethers.Contract(LAND_REGISTRY_ADDRESS, LAND_REGISTRY_ABI, provider);
 
-  const handleViewDetails = (land: any) => {
-    setSelectedLand(land)
-    setShowDetails(true)
+      const itemCount = await marketContract.itemCount();
+      let marketItems = [];
+
+      for (let i = 1; i <= itemCount; i++) {
+        const item = await marketContract.items(i);
+        
+        // Only show items that are NOT sold
+        if (!item.sold) {
+          // Get Metadata URI
+          const uri = await landContract.tokenURI(item.tokenId);
+          
+          // Fetch from IPFS
+          const response = await fetch(uri.replace("ipfs://", "http://127.0.0.1:8080/ipfs/"));
+          const meta = await response.json();
+          
+          // Calculate Price (Wei -> ETH) including fees
+          const totalPrice = await marketContract.getTotalPrice(item.itemId);
+
+          marketItems.push({
+            totalPrice, // Keep as BigNumber for transaction
+            priceEth: ethers.formatEther(totalPrice),
+            itemId: item.itemId,
+            tokenId: item.tokenId,
+            seller: item.seller,
+            name: meta.name,
+            location: meta.attributes[1].value,
+            area: meta.attributes[2].value,
+            image: meta.image.replace("ipfs://", "http://127.0.0.1:8080/ipfs/")
+          });
+        }
+      }
+      setItems(marketItems);
+    } catch (error) {
+      console.error("Error loading marketplace:", error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // --- 2. BUY FUNCTION ---
+  const buyItem = async (item: any) => {
+    if (!window.ethereum) return alert("Please install MetaMask");
+    
+    try {
+      setBuyingId(item.itemId); // Show loader
+
+      const provider = new ethers.BrowserProvider(window.ethereum);
+      const signer = await provider.getSigner();
+      const marketContract = new ethers.Contract(MARKETPLACE_ADDRESS, MARKETPLACE_ABI, signer);
+
+      // Send Transaction: Must send the exact 'value' required
+      const tx = await marketContract.purchaseItem(item.itemId, { value: item.totalPrice });
+      await tx.wait();
+
+      alert(`Successfully bought ${item.name}!`);
+      
+      // Refresh the list to remove the sold item
+      loadMarketplace(); 
+
+    } catch (error: any) {
+      console.error("Purchase failed:", error);
+      alert("Error: " + (error.reason || error.message));
+    } finally {
+      setBuyingId(null);
+    }
   }
 
+  // --- 3. INIT ---
+  useEffect(() => {
+    loadMarketplace();
+    if (window.ethereum) {
+      window.ethereum.request({ method: 'eth_accounts' })
+        .then((accounts: string[]) => {
+           if (accounts.length > 0) setWalletAddress(accounts[0])
+        });
+    }
+  }, []);
+
   return (
-    <>
-      <div className="min-h-screen bg-black">
-        
-        <header className="border-b border-border sticky top-0 z-50 bg-black/80 backdrop-blur-md">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-            <Link href="/" className="flex items-center gap-3">
-              <div className="h-10 w-10 rounded-lg bg-gradient-to-br from-purple-500 to-blue-600 flex items-center justify-center">
-                <span className="text-white font-bold">L</span>
-              </div>
-              <span className="text-xl font-bold text-foreground">LandChain</span>
-            </Link>
-            <div className="flex items-center gap-4">
-              <Link href="/dashboard">
-                <Button variant="ghost" className="text-muted-foreground hover:text-foreground">
-                  Dashboard
-                </Button>
-              </Link>
-            </div>
-          </div>
-        </header>
-        <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
-          <div className="mb-8">
-            <h1 className="text-4xl font-bold text-foreground mb-2 flex items-center gap-3">
-              <MapPin className="h-10 w-10 text-accent" /> Land Marketplace
-            </h1>
-            <p className="text-muted-foreground">Discover and trade verified land NFTs with geographic precision.</p>
-          </div>
-          <Card className="border-border bg-card mb-12 overflow-hidden">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-foreground">
-                <MapPin className="h-5 w-5 text-accent" /> Interactive Map
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="p-0">
-              <MapSection />
-            </CardContent>
-          </Card>
+    <div className="min-h-screen bg-black">
+      <AuthHeader />
 
-          <Card className="border-border bg-card mb-8">
-            <CardHeader>
-              <CardTitle className="text-foreground flex items-center gap-2">
-                <Search className="h-5 w-5 text-accent" /> Find Land
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="grid md:grid-cols-4 gap-4">
-                <Input
-                  placeholder="Search by location, ID..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="bg-input border-border text-foreground placeholder-muted-foreground"
-                />
-                <Select value={sortBy} onValueChange={setSortBy}>
-                  <SelectTrigger className="bg-input border-border text-foreground">
-                    <SelectValue placeholder="Sort by..." />
-                  </SelectTrigger>
-                  <SelectContent className="bg-card border-border">
-                    <SelectItem value="recently-listed" className="text-foreground">Recently Listed</SelectItem>
-                    <SelectItem value="price-low" className="text-foreground">Price: Low to High</SelectItem>
-                    <SelectItem value="price-high" className="text-foreground">Price: High to Low</SelectItem>
-                    <SelectItem value="oldest" className="text-foreground">Oldest First</SelectItem>
-                  </SelectContent>
-                </Select>
-                <Button className="bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white gap-2">
-                  <Search className="h-4 w-4" /> Search
-                </Button>
-                <Button variant="outline" className="border-border">Reset Filters</Button>
-              </div>
-            </CardContent>
-          </Card>
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
+        <div className="flex items-center justify-between mb-8">
+          <div>
+            <h1 className="text-4xl font-bold text-foreground mb-2">Marketplace</h1>
+            <p className="text-muted-foreground">Browse and purchase available land parcels</p>
+          </div>
+          <Link href="/dashboard">
+            <Button variant="outline" className="border-border">Back to Dashboard</Button>
+          </Link>
+        </div>
 
-       
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-            {mockListings.map((land) => (
-              <Card key={land.id} className="border-border overflow-hidden hover:border-purple-600/50 transition bg-background cursor-pointer" onClick={() => handleViewDetails(land)}>
-                <div className="aspect-video bg-gradient-to-br from-purple-600/20 to-blue-600/20 relative overflow-hidden flex items-center justify-center">
-                  <MapPin className="h-12 w-12 text-purple-400/30" />
-                  <div className="absolute top-2 right-2">
-                    <Button size="sm" variant="ghost" className="h-8 w-8 p-0 bg-black/50 hover:bg-black/70">
-                      <Heart size={16} />
-                    </Button>
-                  </div>
-                  <div className="absolute top-2 left-2">
-                    <span className="px-2 py-1 text-xs font-semibold rounded bg-green-600/50 text-green-200">
-                      {land.status}
-                    </span>
+        {loading ? (
+           <div className="flex justify-center py-20">
+             <Loader2 className="h-10 w-10 animate-spin text-accent" />
+           </div>
+        ) : items.length === 0 ? (
+           <div className="text-center py-20 text-muted-foreground border-2 border-dashed border-border rounded-lg">
+             <p>No items listed for sale right now.</p>
+           </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {items.map((item) => (
+              <Card key={item.itemId} className="border-border bg-card overflow-hidden group hover:border-accent transition-all">
+                <div className="relative h-48 overflow-hidden">
+                  <img 
+                    src={item.image} 
+                    alt={item.name}
+                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                    onError={(e) => { (e.target as HTMLImageElement).src = "https://placehold.co/600x400?text=No+Image"; }}
+                  />
+                  <div className="absolute top-3 right-3 bg-black/60 backdrop-blur-md px-3 py-1 rounded-full text-sm font-bold text-white border border-white/20">
+                    {item.priceEth} ETH
                   </div>
                 </div>
-
-                <CardHeader>
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="flex-1">
-                      <CardTitle className="text-base">{land.name}</CardTitle>
-                      <div className="flex items-center gap-1 text-sm text-muted-foreground mt-1">
-                        <MapPin size={14} />
-                        {land.location}
-                      </div>
+                
+                <CardContent className="p-5">
+                  <h3 className="text-xl font-bold text-foreground mb-1">{item.name}</h3>
+                  <div className="flex items-center text-muted-foreground text-sm mb-4">
+                    <MapPin className="h-3.5 w-3.5 mr-1" />
+                    {item.location}
+                  </div>
+                  <div className="grid grid-cols-2 gap-4 py-3 border-t border-border/50">
+                    <div>
+                      <p className="text-xs text-muted-foreground uppercase tracking-wider">Area</p>
+                      <p className="font-medium text-foreground">{item.area}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-muted-foreground uppercase tracking-wider">Seller</p>
+                      <p className="font-medium text-foreground truncate" title={item.seller}>
+                        {item.seller.slice(0, 6)}...{item.seller.slice(-4)}
+                      </p>
                     </div>
                   </div>
-                </CardHeader>
-
-                <CardContent className="space-y-4">
-                  <div>
-                    <p className="text-2xl font-bold text-blue-400">{land.price}</p>
-                    <p className="text-xs text-muted-foreground mt-1">{land.area}</p>
-                  </div>
-
-                  <Button className="w-full bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white h-9">
-                    Buy Now
-                  </Button>
                 </CardContent>
+                
+                <CardFooter className="p-5 pt-0">
+                  {/* Disable Buy Button if user is the seller */}
+                  {item.seller.toLowerCase() === walletAddress?.toLowerCase() ? (
+                     <Button disabled className="w-full bg-muted text-muted-foreground border-border cursor-not-allowed">
+                       You own this
+                     </Button>
+                  ) : (
+                     <Button 
+                       onClick={() => buyItem(item)} 
+                       disabled={buyingId === item.itemId}
+                       className="w-full bg-blue-600 hover:bg-blue-700 text-white"
+                     >
+                       {buyingId === item.itemId ? (
+                         <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                       ) : (
+                         <ShoppingCart className="h-4 w-4 mr-2" /> 
+                       )}
+                       {buyingId === item.itemId ? "Buying..." : "Buy Now"}
+                     </Button>
+                  )}
+                </CardFooter>
               </Card>
             ))}
           </div>
-        </main>
-      </div>
-
-      <LandDetailModal isOpen={showDetails} onClose={() => setShowDetails(false)} land={selectedLand} />
-    </>
+        )}
+      </main>
+    </div>
   )
 }

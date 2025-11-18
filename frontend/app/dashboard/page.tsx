@@ -14,12 +14,13 @@ import AuthHeader from '@/components/auth-header'
 
 // --- BACKEND IMPORTS ---
 import { ethers } from 'ethers'
-import { create } from 'ipfs-http-client'
 import { Buffer } from 'buffer'
-import { LAND_REGISTRY_ADDRESS, LAND_REGISTRY_ABI } from '@/lib/constants'
-
-// Initialize IPFS Client (Local Daemon)
-const client = create({ url: "http://127.0.0.1:5001/api/v0" });
+import { 
+  LAND_REGISTRY_ADDRESS, 
+  LAND_REGISTRY_ABI,
+  MARKETPLACE_ADDRESS, 
+  MARKETPLACE_ABI 
+} from '@/lib/constants'
 
 export default function DashboardPage() {
   const [walletConnected, setWalletConnected] = useState(false)
@@ -30,8 +31,12 @@ export default function DashboardPage() {
   
   // --- STATE UPDATES ---
   const [mintData, setMintData] = useState({ name: '', location: '', area: '' })
-  const [file, setFile] = useState<File | null>(null) // State for Image
-  const [isMinting, setIsMinting] = useState(false)   // Loading State
+  const [file, setFile] = useState<File | null>(null) 
+  const [isMinting, setIsMinting] = useState(false)
+  
+  // --- FETCHING STATE ---
+  const [myLands, setMyLands] = useState<any[]>([])
+  const [loading, setLoading] = useState(false)
 
   useEffect(() => {
     checkMetaMaskConnection()
@@ -42,6 +47,13 @@ export default function DashboardPage() {
       }
     }
   }, [])
+
+  // Trigger fetch when wallet connects
+  useEffect(() => {
+    if (walletConnected && walletAddress) {
+      loadMyLands();
+    }
+  }, [walletConnected, walletAddress]);
 
   const checkMetaMaskConnection = async () => {
     if (typeof window === 'undefined') return
@@ -69,24 +81,19 @@ export default function DashboardPage() {
     } else {
       setWalletConnected(false)
       setWalletAddress(null)
+      setMyLands([])
     }
   }
 
   // --- UPDATED FETCH BALANCE FUNCTION (Direct RPC) ---
   const fetchEthBalance = async (address: string) => {
     try {
-      // Connect directly to Hardhat Node (http://127.0.0.1:8545)
-      // This bypasses MetaMask's cache to get the REAL balance
       const provider = new ethers.JsonRpcProvider("http://127.0.0.1:8545");
       const balance = await provider.getBalance(address);
-      
-      // Format Wei to ETH
       const balanceInEth = ethers.formatEther(balance);
-      
       setEthBalance(parseFloat(balanceInEth).toFixed(4));
     } catch (error) {
       console.error('RPC fetch failed, falling back to wallet:', error);
-      // Fallback to MetaMask if the direct connection fails
       try {
         const provider = new ethers.BrowserProvider((window as any).ethereum);
         const balance = await provider.getBalance(address);
@@ -94,6 +101,171 @@ export default function DashboardPage() {
       } catch (fallbackError) {
          console.error('Fallback failed:', fallbackError);
       }
+    }
+  }
+
+ // --- FINAL LOAD FUNCTION (Owned + Listed) ---
+  const loadMyLands = async () => {
+    if (!walletAddress) return;
+    setLoading(true);
+    
+    try {
+      const provider = new ethers.JsonRpcProvider("http://127.0.0.1:8545");
+      const landContract = new ethers.Contract(LAND_REGISTRY_ADDRESS, LAND_REGISTRY_ABI, provider);
+      const marketContract = new ethers.Contract(MARKETPLACE_ADDRESS, MARKETPLACE_ABI, provider);
+      
+      const loadedLands = [];
+
+      // 1. FETCH OWNED LANDS (In your wallet)
+      // We scan transfer events to find tokens you might own
+      const filter = landContract.filters.Transfer(null, walletAddress);
+      const events = await landContract.queryFilter(filter);
+      const processedOwned = new Set();
+
+      for (const event of events) {
+         // @ts-ignore
+         const tokenId = event.args[2];
+         const idStr = tokenId.toString();
+         if (processedOwned.has(idStr)) continue;
+         processedOwned.add(idStr);
+
+         try {
+             const owner = await landContract.ownerOf(tokenId);
+             if (owner.toLowerCase() === walletAddress.toLowerCase()) {
+                 const uri = await landContract.tokenURI(tokenId);
+                 const response = await fetch(uri.replace("ipfs://", "http://127.0.0.1:8080/ipfs/"));
+                 const meta = await response.json();
+
+                 loadedLands.push({
+                    id: idStr,
+                    name: meta.name,
+                    location: meta.attributes[1].value,
+                    area: meta.attributes[2].value,
+                    image: meta.image.replace("ipfs://", "http://127.0.0.1:8080/ipfs/"),
+                    status: 'Owned'
+                 });
+             }
+         } catch (e) { console.warn(e); }
+      }
+
+      // 2. FETCH LISTED LANDS (In Marketplace contract, but You are the Seller)
+      const itemCount = await marketContract.itemCount();
+      
+      for (let i = 1; i <= itemCount; i++) {
+        const item = await marketContract.items(i);
+        
+        // Check if item is unsold AND you are the seller
+        if (!item.sold && item.seller.toLowerCase() === walletAddress.toLowerCase()) {
+            const uri = await landContract.tokenURI(item.tokenId);
+            const response = await fetch(uri.replace("ipfs://", "http://127.0.0.1:8080/ipfs/"));
+            const meta = await response.json();
+
+            loadedLands.push({
+                id: item.tokenId.toString(),
+                name: meta.name,
+                location: meta.attributes[1].value,
+                area: meta.attributes[2].value,
+                image: meta.image.replace("ipfs://", "http://127.0.0.1:8080/ipfs/"),
+                status: 'Listed' // <--- This tags it for the "Listed" tab
+            });
+        }
+      }
+      
+      setMyLands(loadedLands);
+    } catch (error) {
+      console.error("Error loading lands:", error);
+    } finally {
+      setLoading(false);
+    }
+  };
+  // --- SELLING LOGIC ---
+  const handleSell = async (tokenId: any) => {
+    const priceStr = window.prompt("Enter sale price in ETH (e.g. 0.1):");
+    if (!priceStr) return;
+
+    try {
+      const provider = new ethers.BrowserProvider((window as any).ethereum);
+      const signer = await provider.getSigner();
+      const landContract = new ethers.Contract(LAND_REGISTRY_ADDRESS, LAND_REGISTRY_ABI, signer);
+      const marketContract = new ethers.Contract(MARKETPLACE_ADDRESS, MARKETPLACE_ABI, signer);
+
+      // 1. Approve
+      console.log("Approving...");
+      alert("Step 1: Please approve Marketplace in MetaMask.");
+      const tx1 = await landContract.approve(MARKETPLACE_ADDRESS, tokenId);
+      await tx1.wait();
+
+      // 2. List
+      console.log("Listing...");
+      alert("Step 2: Confirm listing transaction.");
+      const priceWei = ethers.parseEther(priceStr);
+      const tx2 = await marketContract.makeItem(LAND_REGISTRY_ADDRESS, tokenId, priceWei);
+      await tx2.wait();
+
+      alert("Land listed for sale!");
+      loadMyLands(); // Refresh gallery
+    } catch (error: any) {
+      console.error("Sell failed:", error);
+      alert("Error: " + (error.reason || error.message));
+    }
+  };
+
+  // --- MINTING LOGIC ---
+  const handleMint = async () => {
+    if (!mintData.name || !mintData.location || !mintData.area || !file) {
+      alert('Please fill all fields and upload an image.')
+      return
+    }
+
+    setIsMinting(true)
+
+    try {
+      const { create } = await import('ipfs-http-client');
+      const client = create({ url: "http://127.0.0.1:5001/api/v0" });
+
+      const provider = new ethers.BrowserProvider((window as any).ethereum)
+      const signer = await provider.getSigner()
+
+      console.log("Uploading image...")
+      const imageAdded = await client.add(file)
+      const imageCid = imageAdded.path
+
+      const metadata = JSON.stringify({
+        name: `Survey ${mintData.name}`,
+        description: `Property at ${mintData.location}. Area: ${mintData.area} sq ft.`,
+        image: `ipfs://${imageCid}`,
+        attributes: [
+          { trait_type: "Survey Number", value: mintData.name },
+          { trait_type: "Location", value: mintData.location },
+          { trait_type: "Area", value: `${mintData.area} sq ft` }
+        ]
+      })
+
+      console.log("Uploading metadata...")
+      const metaAdded = await client.add(Buffer.from(metadata))
+      const metaCid = metaAdded.path
+
+      console.log("Minting...")
+      const contract = new ethers.Contract(LAND_REGISTRY_ADDRESS, LAND_REGISTRY_ABI, signer)
+      const surveyHash = ethers.id(mintData.name)
+
+      const tx = await contract.mintLand(`ipfs://${metaCid}`, surveyHash)
+      await tx.wait() 
+
+      
+      setShowMintModal(false)
+      setMintData({ name: '', location: '', area: '' })
+      setFile(null)
+      
+      // Refresh Data
+      loadMyLands();
+      fetchEthBalance(walletAddress!);
+
+    } catch (error: any) {
+      console.error(error)
+      alert('Minting Failed: ' + (error.reason || error.message))
+    } finally {
+      setIsMinting(false)
     }
   }
 
@@ -107,70 +279,6 @@ export default function DashboardPage() {
 
   const formatAddress = (address: string) => {
     return `${address.slice(0, 6)}...${address.slice(-4)}`
-  }
-
-  // --- MINTING LOGIC ---
-  const handleMint = async () => {
-    // 1. Validation
-    if (!mintData.name || !mintData.location || !mintData.area || !file) {
-      alert('Please fill all fields and upload an image.')
-      return
-    }
-
-    setIsMinting(true)
-
-    try {
-      // 2. Get Signer (User's Wallet)
-      const provider = new ethers.BrowserProvider((window as any).ethereum)
-      const signer = await provider.getSigner()
-
-      // 3. Upload Image to IPFS
-      console.log("Uploading image to IPFS...")
-      const imageAdded = await client.add(file)
-      const imageCid = imageAdded.path
-
-      // 4. Create Metadata JSON
-      const metadata = JSON.stringify({
-        name: `Survey ${mintData.name}`,
-        description: `Property at ${mintData.location}. Area: ${mintData.area} sq ft.`,
-        image: `ipfs://${imageCid}`,
-        attributes: [
-          { trait_type: "Survey Number", value: mintData.name },
-          { trait_type: "Location", value: mintData.location },
-          { trait_type: "Area", value: `${mintData.area} sq ft` }
-        ]
-      })
-
-      // 5. Upload Metadata to IPFS
-      console.log("Uploading metadata...")
-      const metaAdded = await client.add(Buffer.from(metadata))
-      const metaCid = metaAdded.path
-
-      // 6. Interact with Blockchain
-      console.log("Minting on Blockchain...")
-      const contract = new ethers.Contract(LAND_REGISTRY_ADDRESS, LAND_REGISTRY_ABI, signer)
-      
-      // Create a unique hash for the survey number
-      const surveyHash = ethers.id(mintData.name)
-
-      // Call the smart contract
-      const tx = await contract.mintLand(`ipfs://${metaCid}`, surveyHash)
-      await tx.wait() // Wait for transaction to finish
-
-      alert('Land Minted Successfully!')
-      
-      // 7. Reset Form
-      setShowMintModal(false)
-      setMintData({ name: '', location: '', area: '' })
-      setFile(null)
-      window.location.reload() // Reload to see the new asset
-
-    } catch (error: any) {
-      console.error(error)
-      alert('Minting Failed: ' + (error.reason || error.message))
-    } finally {
-      setIsMinting(false)
-    }
   }
 
   if (!walletConnected) {
@@ -212,28 +320,23 @@ export default function DashboardPage() {
 
   return (
     <div className="min-h-screen bg-black">
-      {/* Header */}
       <AuthHeader />
 
-      {/* Content */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
-        {/* Welcome Section */}
         <div className="mb-8">
           <h1 className="text-4xl font-bold text-foreground mb-2">Welcome to Your Dashboard</h1>
           <p className="text-muted-foreground">Manage your land NFTs and view your portfolio performance</p>
         </div>
 
-        {/* Quick Stats */}
         <div className="mb-12">
           <QuickStats stats={{
-            myAssets: 3,
+            myAssets: myLands.length, // Dynamic Count
             totalValue: '$2.7M',
             growth: '+24.5%',
             transactions: 48
           }} />
         </div>
 
-        {/* Wallet Info Cards */}
         <div className="grid md:grid-cols-3 gap-6 mb-12">
           <Card className="border-border bg-card">
             <CardHeader>
@@ -249,11 +352,7 @@ export default function DashboardPage() {
                   className="p-2 hover:bg-card rounded transition-colors"
                   title={copied ? 'Copied!' : 'Copy address'}
                 >
-                  {copied ? (
-                    <CheckCircle2 className="h-4 w-4 text-green-400" />
-                  ) : (
-                    <Copy className="h-4 w-4 text-muted-foreground" />
-                  )}
+                  {copied ? <CheckCircle2 className="h-4 w-4 text-green-400" /> : <Copy className="h-4 w-4 text-muted-foreground" />}
                 </button>
               </div>
             </CardContent>
@@ -281,18 +380,23 @@ export default function DashboardPage() {
           </Card>
         </div>
 
-        {/* Actions */}
         <div className="grid md:grid-cols-2 gap-6 mb-12">
           <Button onClick={() => setShowMintModal(true)} className="bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white h-12 text-lg px-8 gap-2">
             <Plus className="h-5 w-5" /> Mint New Land
           </Button>
-          <Button variant="outline" className="h-12 text-lg px-8 gap-2 border-border">
-            <MapPin className="h-5 w-5" /> Browse Marketplace
-          </Button>
+          <Link href="/marketplace" className="flex-1">
+             <Button variant="outline" className="h-12 text-lg px-8 gap-2 border-border w-full">
+               <MapPin className="h-5 w-5" /> Browse Marketplace
+             </Button>
+          </Link>
         </div>
 
-        {/* NFT Gallery */}
-        <NFTGallery onMint={() => setShowMintModal(true)} />
+        <NFTGallery 
+          onMint={() => setShowMintModal(true)} 
+          items={myLands} 
+          loading={loading}
+          onSell={handleSell} // Pass the sell function
+        />
       </main>
 
       {/* Mint Modal */}
@@ -338,7 +442,6 @@ export default function DashboardPage() {
               />
             </div>
 
-            {/* --- IMAGE INPUT SECTION --- */}
             <div>
               <label className="text-sm font-medium text-foreground mb-2 block">Land Image</label>
               <div className="border-2 border-dashed border-border rounded-lg p-6 text-center hover:bg-muted/50 transition-colors cursor-pointer relative">
@@ -366,17 +469,12 @@ export default function DashboardPage() {
                 disabled={isMinting}
                 className="flex-1 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white"
               >
-                {isMinting ? (
-                  <>Processing...</>
-                ) : (
-                  <><Plus className="h-4 w-4 mr-2" /> Mint Now</>
-                )}
+                {isMinting ? "Processing..." : "Mint Now"}
               </Button>
             </div>
           </div>
         </DialogContent>
       </Dialog>
-     
     </div>
   )
 }

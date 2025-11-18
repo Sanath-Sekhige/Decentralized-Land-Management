@@ -1,154 +1,139 @@
-"use client"
-
-import { useState } from "react"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { MapPin, Heart, Plus } from 'lucide-react'
-import LandDetailModal from "./land-detail-modal"
+import { useState } from 'react' // Import useState
+import { Card, CardContent, CardFooter } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
+import { MapPin, Plus } from 'lucide-react'
 
 interface NFTGalleryProps {
-  onMint?: () => void
+  onMint: () => void;
+  items: any[];
+  loading: boolean;
+  onSell: (id: number) => void;
 }
 
-export default function NFTGallery({ onMint }: NFTGalleryProps) {
-  const [selectedLand, setSelectedLand] = useState<any>(null)
-  const [showDetails, setShowDetails] = useState(false)
+export default function NFTGallery({ onMint, items = [], loading, onSell }: NFTGalleryProps) {
+  const [activeTab, setActiveTab] = useState<'Owned' | 'Listed'>('Owned'); // State for tabs
 
-  const mockLands = [
-    {
-      id: 1,
-      name: "Manhattan Premium Parcel",
-      location: "New York, USA",
-      price: "$850,000",
-      area: "2,500 sq ft",
-      coordinates: { lat: 40.7128, lng: -74.006 },
-      status: "available" as const,
-      type: "commercial" as const,
-      listedDate: "2024-11-15",
-      description: "Premium location in Manhattan with excellent development potential. Perfect for commercial or residential projects.",
-    },
-    {
-      id: 2,
-      name: "Brooklyn Heights Estate",
-      location: "New York, USA",
-      price: "$1,200,000",
-      area: "5,000 sq ft",
-      coordinates: { lat: 40.695, lng: -74.01 },
-      status: "available" as const,
-      type: "residential" as const,
-      listedDate: "2024-11-10",
-      description: "Beautiful Brooklyn Heights property with historic charm and modern amenities nearby.",
-    },
-    {
-      id: 3,
-      name: "Queens Commercial Zone",
-      location: "New York, USA",
-      price: "$650,000",
-      area: "3,500 sq ft",
-      coordinates: { lat: 40.73, lng: -74.02 },
-      status: "pending" as const,
-      type: "mixed-use" as const,
-      listedDate: "2024-11-12",
-      description: "Growing commercial zone with excellent rental income potential and future appreciation.",
-    },
-  ]
+  // Filter items based on the active tab
+  const filteredItems = items.filter(item => item.status === activeTab);
+  
+  // Calculate counts for the buttons
+  const ownedCount = items.filter(i => i.status === 'Owned').length;
+  const listedCount = items.filter(i => i.status === 'Listed').length;
 
-  const handleViewDetails = (land: any) => {
-    setSelectedLand(land)
-    setShowDetails(true)
+  if (loading) {
+    return <div className="text-center py-20 text-muted-foreground animate-pulse">Loading your digital assets...</div>;
   }
 
   return (
-    <>
-      <Card className="border-border bg-card">
-        <CardHeader>
-          <CardTitle className="text-foreground">Your Land NFT Collection</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <Tabs defaultValue="owned" className="w-full">
-            <TabsList className="grid w-full grid-cols-2 bg-input border border-border">
-              <TabsTrigger value="owned" className="text-muted-foreground data-[state=active]:text-foreground data-[state=active]:bg-card">
-                Owned ({mockLands.length})
-              </TabsTrigger>
-              <TabsTrigger value="listed" className="text-muted-foreground data-[state=active]:text-foreground data-[state=active]:bg-card">
-                Listed (1)
-              </TabsTrigger>
-            </TabsList>
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <h2 className="text-2xl font-bold text-foreground">Your Land NFT Collection</h2>
+        <div className="bg-card border border-border rounded-lg p-1 flex">
+          {/* OWNED TAB BUTTON */}
+          <button 
+            onClick={() => setActiveTab('Owned')}
+            className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all ${
+              activeTab === 'Owned' 
+                ? "bg-accent text-accent-foreground" 
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            Owned ({ownedCount})
+          </button>
 
-            <TabsContent value="owned" className="mt-6">
-              {mockLands.length > 0 ? (
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-                  {mockLands.map((land) => (
-                    <Card key={land.id} className="border-border overflow-hidden hover:border-purple-600/50 transition bg-background">
-                      <div className="aspect-video bg-gradient-to-br from-purple-600/20 to-blue-600/20 relative overflow-hidden flex items-center justify-center">
-                        <MapPin className="h-12 w-12 text-purple-400/30" />
-                        <div className="absolute top-2 right-2">
-                          <Button size="sm" variant="ghost" className="h-8 w-8 p-0 bg-black/50 hover:bg-black/70">
-                            <Heart size={16} />
-                          </Button>
-                        </div>
-                        <div className="absolute top-2 left-2">
-                          <span className={`px-2 py-1 text-xs font-semibold rounded ${
-                            land.status === "available" ? "bg-green-600/50 text-green-200" : "bg-yellow-600/50 text-yellow-200"
-                          }`}>
-                            {land.status}
-                          </span>
-                        </div>
-                      </div>
+          {/* LISTED TAB BUTTON */}
+          <button 
+            onClick={() => setActiveTab('Listed')}
+            className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all ${
+              activeTab === 'Listed' 
+                ? "bg-accent text-accent-foreground" 
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            Listed ({listedCount})
+          </button>
+        </div>
+      </div>
 
-                      <CardHeader>
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="flex-1">
-                            <CardTitle className="text-base">{land.name}</CardTitle>
-                            <div className="flex items-center gap-1 text-sm text-muted-foreground mt-1">
-                              <MapPin size={14} />
-                              {land.location}
-                            </div>
-                          </div>
-                        </div>
-                      </CardHeader>
-
-                      <CardContent className="space-y-4">
-                        <div>
-                          <p className="text-2xl font-bold text-blue-400">{land.price}</p>
-                          <p className="text-xs text-muted-foreground mt-1">{land.area}</p>
-                        </div>
-
-                        <div className="flex gap-2">
-                          <Button onClick={() => handleViewDetails(land)} className="flex-1 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 h-9">
-                            View Details
-                          </Button>
-                          <Button variant="outline" className="flex-1 border-border h-9 bg-transparent">
-                            Sell
-                          </Button>
-                        </div>
-                      </CardContent>
-                    </Card>
-                  ))}
+      {filteredItems.length === 0 ? (
+        // EMPTY STATE (Dynamic Message)
+        <Card className="border-dashed border-2 border-border bg-card/50 h-[300px] flex flex-col items-center justify-center text-center">
+          <CardContent className="pt-6 flex flex-col items-center">
+            <div className="h-12 w-12 rounded-full bg-accent/20 flex items-center justify-center mb-4">
+              <MapPin className="h-6 w-6 text-accent" />
+            </div>
+            <h3 className="text-lg font-semibold text-foreground mb-2">
+              {activeTab === 'Owned' ? "No unlisted lands found" : "No listed lands found"}
+            </h3>
+            <p className="text-muted-foreground max-w-sm mb-6">
+              {activeTab === 'Owned' 
+                ? "You don't have any lands ready to sell. Mint a new one!" 
+                : "You haven't listed any properties for sale yet."}
+            </p>
+            {activeTab === 'Owned' && (
+              <Button onClick={onMint} className="bg-accent hover:bg-accent/90 text-white">
+                <Plus className="h-4 w-4 mr-2" /> Mint First Land
+              </Button>
+            )}
+          </CardContent>
+        </Card>
+      ) : (
+        // DATA STATE
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {filteredItems.map((item, index) => (
+            <Card key={index} className="border-border bg-card overflow-hidden group hover:border-accent transition-all">
+              <div className="relative h-48 overflow-hidden">
+                <img 
+                  src={item.image} 
+                  alt={item.name}
+                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                  onError={(e) => { (e.target as HTMLImageElement).src = "https://placehold.co/600x400?text=No+Image"; }}
+                />
+                <div className={`absolute top-3 left-3 backdrop-blur-md px-2 py-1 rounded text-xs font-medium border ${
+                  item.status === 'Listed' 
+                    ? "bg-yellow-500/20 text-yellow-400 border-yellow-500/50"
+                    : "bg-green-500/20 text-green-400 border-green-500/50"
+                }`}>
+                  {item.status}
                 </div>
-              ) : (
-                <div className="text-center py-12 text-muted-foreground">
-                  <MapPin className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                  <p className="mb-4">No land NFTs yet. Mint one to get started!</p>
-                  <Button onClick={onMint} className="bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white gap-2">
-                    <Plus className="h-4 w-4" /> Mint Land
-                  </Button>
-                </div>
-              )}
-            </TabsContent>
-
-            <TabsContent value="listed" className="mt-6">
-              <div className="text-center py-12 text-muted-foreground">
-                <MapPin className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                <p>No listed lands yet. List one from your collection!</p>
               </div>
-            </TabsContent>
-          </Tabs>
-        </CardContent>
-      </Card>
-
-      <LandDetailModal isOpen={showDetails} onClose={() => setShowDetails(false)} land={selectedLand} />
-    </>
+              
+              <CardContent className="p-5">
+                <h3 className="text-xl font-bold text-foreground mb-1">{item.name}</h3>
+                <div className="flex items-center text-muted-foreground text-sm mb-4">
+                  <MapPin className="h-3.5 w-3.5 mr-1" />
+                  {item.location || "Unknown"}
+                </div>
+                <div className="grid grid-cols-2 gap-4 py-3 border-t border-border/50">
+                  <div>
+                    <p className="text-xs text-muted-foreground uppercase tracking-wider">Area</p>
+                    <p className="font-medium text-foreground">{item.area || "N/A"}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground uppercase tracking-wider">Token ID</p>
+                    <p className="font-medium text-foreground">#{item.id.slice(0,6)}...</p>
+                  </div>
+                </div>
+              </CardContent>
+              
+              <CardFooter className="p-5 pt-0 gap-3">
+                <Button className="flex-1 bg-accent hover:bg-accent/90 text-white">
+                  View Details
+                </Button>
+                {item.status === 'Owned' ? (
+                  <Button variant="outline" className="flex-1 border-border" onClick={() => onSell(item.id)}>
+                    Sell Land
+                  </Button>
+                ) : (
+                  <Button disabled variant="secondary" className="flex-1">
+                    Listed
+                  </Button>
+                )}
+              </CardFooter>
+            </Card>
+          ))}
+        </div>
+      )}
+    </div>
   )
 }
