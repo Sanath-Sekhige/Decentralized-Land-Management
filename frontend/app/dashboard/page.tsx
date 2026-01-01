@@ -3,14 +3,16 @@
 import { useState, useEffect } from 'react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle as DTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import Link from 'next/link'
-import { Wallet, MapPin, Plus, Copy, CheckCircle2, UploadCloud } from 'lucide-react'
+import { Wallet, MapPin, Plus, Copy, CheckCircle2, UploadCloud, DollarSign, ChevronUp, ChevronDown, X } from 'lucide-react'
 import QuickStats from '@/components/dashboard/quick-stats'
 import NFTGallery from '@/components/dashboard/nft-gallery'
 import { AuthForm } from '@/components/auth/auth-form'
 import AuthHeader from '@/components/auth-header'
+
+// --- STANDARD IMPORT ---
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 
 // --- BACKEND IMPORTS ---
 import { ethers } from 'ethers'
@@ -27,12 +29,22 @@ export default function DashboardPage() {
   const [walletAddress, setWalletAddress] = useState<string | null>(null)
   const [ethBalance, setEthBalance] = useState<string>('0.00')
   const [copied, setCopied] = useState(false)
-  const [showMintModal, setShowMintModal] = useState(false)
   
-  // --- STATE UPDATES ---
+  // --- MINT MODAL STATE ---
+  const [showMintModal, setShowMintModal] = useState(false)
   const [mintData, setMintData] = useState({ name: '', location: '', area: '' })
   const [file, setFile] = useState<File | null>(null) 
   const [isMinting, setIsMinting] = useState(false)
+
+  // --- SELL MODAL STATE ---
+  const [showSellModal, setShowSellModal] = useState(false)
+  const [sellPrice, setSellPrice] = useState('')
+  const [landToSell, setLandToSell] = useState<string | null>(null)
+  const [isSelling, setIsSelling] = useState(false)
+
+  // --- UI FEEDBACK STATE ---
+  const [showSuccessModal, setShowSuccessModal] = useState(false)
+  const [errorModal, setErrorModal] = useState({ show: false, message: '' })
   
   // --- FETCHING STATE ---
   const [myLands, setMyLands] = useState<any[]>([])
@@ -48,7 +60,6 @@ export default function DashboardPage() {
     }
   }, [])
 
-  // Trigger fetch when wallet connects
   useEffect(() => {
     if (walletConnected && walletAddress) {
       loadMyLands();
@@ -60,9 +71,7 @@ export default function DashboardPage() {
     if (!(window as any).ethereum) return
 
     try {
-      const accounts = await (window as any).ethereum.request({
-        method: 'eth_accounts',
-      })
+      const accounts = await (window as any).ethereum.request({ method: 'eth_accounts' })
       if (accounts && accounts.length > 0) {
         setWalletConnected(true)
         setWalletAddress(accounts[0])
@@ -85,26 +94,21 @@ export default function DashboardPage() {
     }
   }
 
-  // --- UPDATED FETCH BALANCE FUNCTION (Direct RPC) ---
   const fetchEthBalance = async (address: string) => {
     try {
       const provider = new ethers.JsonRpcProvider("http://127.0.0.1:8545");
       const balance = await provider.getBalance(address);
-      const balanceInEth = ethers.formatEther(balance);
-      setEthBalance(parseFloat(balanceInEth).toFixed(4));
+      setEthBalance(parseFloat(ethers.formatEther(balance)).toFixed(4));
     } catch (error) {
-      console.error('RPC fetch failed, falling back to wallet:', error);
+      console.log('RPC fetch failed, falling back to wallet provider');
       try {
         const provider = new ethers.BrowserProvider((window as any).ethereum);
         const balance = await provider.getBalance(address);
         setEthBalance(parseFloat(ethers.formatEther(balance)).toFixed(4));
-      } catch (fallbackError) {
-         console.error('Fallback failed:', fallbackError);
-      }
+      } catch (e) { console.error(e); }
     }
   }
 
- // --- FINAL LOAD FUNCTION (Owned + Listed) ---
   const loadMyLands = async () => {
     if (!walletAddress) return;
     setLoading(true);
@@ -116,8 +120,7 @@ export default function DashboardPage() {
       
       const loadedLands = [];
 
-      // 1. FETCH OWNED LANDS (In your wallet)
-      // We scan transfer events to find tokens you might own
+      // 1. FETCH OWNED LANDS
       const filter = landContract.filters.Transfer(null, walletAddress);
       const events = await landContract.queryFilter(filter);
       const processedOwned = new Set();
@@ -148,13 +151,10 @@ export default function DashboardPage() {
          } catch (e) { console.warn(e); }
       }
 
-      // 2. FETCH LISTED LANDS (In Marketplace contract, but You are the Seller)
+      // 2. FETCH LISTED LANDS
       const itemCount = await marketContract.itemCount();
-      
       for (let i = 1; i <= itemCount; i++) {
         const item = await marketContract.items(i);
-        
-        // Check if item is unsold AND you are the seller
         if (!item.sold && item.seller.toLowerCase() === walletAddress.toLowerCase()) {
             const uri = await landContract.tokenURI(item.tokenId);
             const response = await fetch(uri.replace("ipfs://", "http://127.0.0.1:8080/ipfs/"));
@@ -166,11 +166,10 @@ export default function DashboardPage() {
                 location: meta.attributes[1].value,
                 area: meta.attributes[2].value,
                 image: meta.image.replace("ipfs://", "http://127.0.0.1:8080/ipfs/"),
-                status: 'Listed' // <--- This tags it for the "Listed" tab
+                status: 'Listed'
             });
         }
       }
-      
       setMyLands(loadedLands);
     } catch (error) {
       console.error("Error loading lands:", error);
@@ -178,10 +177,31 @@ export default function DashboardPage() {
       setLoading(false);
     }
   };
-  // --- SELLING LOGIC ---
-  const handleSell = async (tokenId: any) => {
-    const priceStr = window.prompt("Enter sale price in ETH (e.g. 0.1):");
-    if (!priceStr) return;
+
+  // --- OPEN SELL MODAL ---
+  const openSellModal = (tokenId: string) => {
+    setLandToSell(tokenId);
+    setSellPrice(''); // Reset price
+    setShowSellModal(true);
+  };
+
+  // --- CUSTOM SPINNER LOGIC ---
+  const incrementPrice = () => {
+    setSellPrice(prev => (parseFloat(prev || '0') + 1).toString());
+  };
+
+  const decrementPrice = () => {
+    setSellPrice(prev => {
+      const current = parseFloat(prev || '0');
+      if (current <= 1) return '0';
+      return (current - 1).toString();
+    });
+  };
+
+  // --- EXECUTE SELL LOGIC ---
+  const confirmListing = async () => {
+    if (!sellPrice || !landToSell) return;
+    setIsSelling(true);
 
     try {
       const provider = new ethers.BrowserProvider((window as any).ethereum);
@@ -191,42 +211,44 @@ export default function DashboardPage() {
 
       // 1. Approve
       console.log("Approving...");
-      alert("Step 1: Please approve Marketplace in MetaMask.");
-      const tx1 = await landContract.approve(MARKETPLACE_ADDRESS, tokenId);
+      const tx1 = await landContract.approve(MARKETPLACE_ADDRESS, landToSell);
       await tx1.wait();
 
       // 2. List
       console.log("Listing...");
-      alert("Step 2: Confirm listing transaction.");
-      const priceWei = ethers.parseEther(priceStr);
-      const tx2 = await marketContract.makeItem(LAND_REGISTRY_ADDRESS, tokenId, priceWei);
+      const priceWei = ethers.parseEther(sellPrice);
+      const tx2 = await marketContract.makeItem(LAND_REGISTRY_ADDRESS, landToSell, priceWei);
       await tx2.wait();
 
-      alert("Land listed for sale!");
-      loadMyLands(); // Refresh gallery
+      // Success UI
+      setShowSuccessModal(true);
+      setShowSellModal(false);
+      loadMyLands();
+
     } catch (error: any) {
       console.error("Sell failed:", error);
-      alert("Error: " + (error.reason || error.message));
+      setErrorModal({ 
+        show: true, 
+        message: error.reason || error.message || "Transaction cancelled" 
+      });
+    } finally {
+      setIsSelling(false);
     }
   };
 
-  // --- MINTING LOGIC ---
+  // --- MINT LOGIC ---
   const handleMint = async () => {
     if (!mintData.name || !mintData.location || !mintData.area || !file) {
-      alert('Please fill all fields and upload an image.')
+      setErrorModal({ show: true, message: "Please fill all fields and upload an image." });
       return
     }
-
     setIsMinting(true)
-
     try {
       const { create } = await import('ipfs-http-client');
       const client = create({ url: "http://127.0.0.1:5001/api/v0" });
-
       const provider = new ethers.BrowserProvider((window as any).ethereum)
       const signer = await provider.getSigner()
 
-      console.log("Uploading image...")
       const imageAdded = await client.add(file)
       const imageCid = imageAdded.path
 
@@ -241,29 +263,20 @@ export default function DashboardPage() {
         ]
       })
 
-      console.log("Uploading metadata...")
       const metaAdded = await client.add(Buffer.from(metadata))
       const metaCid = metaAdded.path
 
-      console.log("Minting...")
       const contract = new ethers.Contract(LAND_REGISTRY_ADDRESS, LAND_REGISTRY_ABI, signer)
       const surveyHash = ethers.id(mintData.name)
-
       const tx = await contract.mintLand(`ipfs://${metaCid}`, surveyHash)
       await tx.wait() 
-
       
       setShowMintModal(false)
       setMintData({ name: '', location: '', area: '' })
       setFile(null)
-      
-      // Refresh Data
       loadMyLands();
-      fetchEthBalance(walletAddress!);
-
     } catch (error: any) {
-      console.error(error)
-      alert('Minting Failed: ' + (error.reason || error.message))
+      setErrorModal({ show: true, message: "Minting Failed: " + (error.reason || error.message) });
     } finally {
       setIsMinting(false)
     }
@@ -277,9 +290,7 @@ export default function DashboardPage() {
     }
   }
 
-  const formatAddress = (address: string) => {
-    return `${address.slice(0, 6)}...${address.slice(-4)}`
-  }
+  const formatAddress = (address: string) => `${address.slice(0, 6)}...${address.slice(-4)}`
 
   if (!walletConnected) {
     return (
@@ -294,7 +305,6 @@ export default function DashboardPage() {
             </Link>
           </div>
         </header>
-
         <main className="max-w-md mx-auto px-4 py-16">
           <Card className="border-border bg-card">
             <CardHeader className="text-center">
@@ -303,13 +313,11 @@ export default function DashboardPage() {
             </CardHeader>
             <CardContent className="space-y-4">
               <p className="text-muted-foreground text-center text-sm">
-                Connect your MetaMask wallet to access your dashboard and manage your land NFTs.
+                Connect your MetaMask wallet to access your dashboard.
               </p>
               <AuthForm type="login" />
               <Link href="/">
-                <Button variant="outline" className="w-full border-border">
-                  Back to Home
-                </Button>
+                <Button variant="outline" className="w-full border-border">Back to Home</Button>
               </Link>
             </CardContent>
           </Card>
@@ -330,8 +338,8 @@ export default function DashboardPage() {
 
         <div className="mb-12">
           <QuickStats stats={{
-            myAssets: myLands.length, // Dynamic Count
-            totalValue: '$2.7M',
+            myAssets: myLands.length,
+            totalValue: `${(myLands.length * 2.5).toFixed(1)} ETH`,
             growth: '+24.5%',
             transactions: 48
           }} />
@@ -339,19 +347,11 @@ export default function DashboardPage() {
 
         <div className="grid md:grid-cols-3 gap-6 mb-12">
           <Card className="border-border bg-card">
-            <CardHeader>
-              <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-                <Wallet className="h-4 w-4" /> Wallet Address
-              </CardTitle>
-            </CardHeader>
+            <CardHeader><CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2"><Wallet className="h-4 w-4" /> Wallet Address</CardTitle></CardHeader>
             <CardContent>
               <div className="flex items-center gap-2">
                 <p className="text-lg font-mono text-accent break-all">{walletAddress && formatAddress(walletAddress)}</p>
-                <button
-                  onClick={copyToClipboard}
-                  className="p-2 hover:bg-card rounded transition-colors"
-                  title={copied ? 'Copied!' : 'Copy address'}
-                >
+                <button onClick={copyToClipboard} className="p-2 hover:bg-card rounded transition-colors">
                   {copied ? <CheckCircle2 className="h-4 w-4 text-green-400" /> : <Copy className="h-4 w-4 text-muted-foreground" />}
                 </button>
               </div>
@@ -359,18 +359,14 @@ export default function DashboardPage() {
           </Card>
 
           <Card className="border-border bg-card">
-            <CardHeader>
-              <CardTitle className="text-sm font-medium text-muted-foreground">ETH Balance</CardTitle>
-            </CardHeader>
+            <CardHeader><CardTitle className="text-sm font-medium text-muted-foreground">ETH Balance</CardTitle></CardHeader>
             <CardContent>
               <p className="text-3xl font-bold text-foreground">{ethBalance} <span className="text-sm text-muted-foreground">ETH</span></p>
             </CardContent>
           </Card>
 
           <Card className="border-border bg-card">
-            <CardHeader>
-              <CardTitle className="text-sm font-medium text-muted-foreground">Status</CardTitle>
-            </CardHeader>
+            <CardHeader><CardTitle className="text-sm font-medium text-muted-foreground">Status</CardTitle></CardHeader>
             <CardContent>
               <div className="flex items-center gap-2">
                 <div className="h-3 w-3 rounded-full bg-green-500 animate-pulse" />
@@ -395,83 +391,171 @@ export default function DashboardPage() {
           onMint={() => setShowMintModal(true)} 
           items={myLands} 
           loading={loading}
-          onSell={handleSell} // Pass the sell function
+          // FIXED: Use (id: any) to bypass TypeScript number/string mismatch
+          onSell={(id: any) => openSellModal(id.toString())} 
         />
       </main>
 
-      {/* Mint Modal */}
+      {/* --- MINT MODAL --- */}
       <Dialog open={showMintModal} onOpenChange={setShowMintModal}>
         <DialogContent className="bg-card border-border max-w-md">
           <DialogHeader>
-            <DTitle className="text-foreground flex items-center gap-2">
+            <DialogTitle className="text-foreground flex items-center gap-2">
               <Plus className="h-5 w-5 text-accent" /> Mint New Land NFT
-            </DTitle>
+            </DialogTitle>
+            <DialogDescription className="text-muted-foreground">Create a new land NFT with geographic data</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div><label className="text-sm font-medium text-foreground mb-2 block">Survey Number</label>
+              <Input placeholder="e.g., S001" value={mintData.name} onChange={(e) => setMintData({ ...mintData, name: e.target.value })} className="bg-input border-border text-foreground" />
+            </div>
+            <div><label className="text-sm font-medium text-foreground mb-2 block">Location</label>
+              <Input placeholder="e.g., New York" value={mintData.location} onChange={(e) => setMintData({ ...mintData, location: e.target.value })} className="bg-input border-border text-foreground" />
+            </div>
+            <div><label className="text-sm font-medium text-foreground mb-2 block">Area (sq ft)</label>
+              <Input placeholder="e.g., 2500" value={mintData.area} onChange={(e) => setMintData({ ...mintData, area: e.target.value })} className="bg-input border-border text-foreground" />
+            </div>
+            <div><label className="text-sm font-medium text-foreground mb-2 block">Land Image</label>
+              <div className="border-2 border-dashed border-border rounded-lg p-6 text-center hover:bg-muted/50 cursor-pointer relative">
+                <input type="file" accept="image/*" onChange={(e) => setFile(e.target.files ? e.target.files[0] : null)} className="absolute inset-0 opacity-0 cursor-pointer" />
+                <div className="flex flex-col items-center gap-2">
+                  <UploadCloud className="h-8 w-8 text-muted-foreground" />
+                  <p className="text-sm text-muted-foreground">{file ? file.name : "Click to upload image"}</p>
+                </div>
+              </div>
+            </div>
+            <div className="flex gap-3 pt-4">
+              <Button variant="outline" className="flex-1 border-border" onClick={() => setShowMintModal(false)}>Cancel</Button>
+              <Button onClick={handleMint} disabled={isMinting} className="flex-1 bg-gradient-to-r from-purple-600 to-blue-600 text-white">
+                {isMinting ? "Processing..." : "Mint Now"}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* --- SELL MODAL (CUSTOM UI) --- */}
+      <Dialog open={showSellModal} onOpenChange={setShowSellModal}>
+        <DialogContent className="bg-card border-border max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-foreground flex items-center gap-2">
+              <DollarSign className="h-5 w-5 text-green-500" /> List Land For Sale
+            </DialogTitle>
             <DialogDescription className="text-muted-foreground">
-              Create a new land NFT with geographic data
+              Set a price for your land to list it on the marketplace.
             </DialogDescription>
           </DialogHeader>
 
           <div className="space-y-4">
             <div>
-              <label className="text-sm font-medium text-foreground mb-2 block">Survey Number</label>
-              <Input
-                placeholder="e.g., S001"
-                value={mintData.name}
-                onChange={(e) => setMintData({ ...mintData, name: e.target.value })}
-                className="bg-input border-border text-foreground placeholder-muted-foreground"
-              />
-            </div>
-
-            <div>
-              <label className="text-sm font-medium text-foreground mb-2 block">Location</label>
-              <Input
-                placeholder="e.g., New York, USA"
-                value={mintData.location}
-                onChange={(e) => setMintData({ ...mintData, location: e.target.value })}
-                className="bg-input border-border text-foreground placeholder-muted-foreground"
-              />
-            </div>
-
-            <div>
-              <label className="text-sm font-medium text-foreground mb-2 block">Area (sq ft)</label>
-              <Input
-                placeholder="e.g., 2500"
-                value={mintData.area}
-                onChange={(e) => setMintData({ ...mintData, area: e.target.value })}
-                className="bg-input border-border text-foreground placeholder-muted-foreground"
-              />
-            </div>
-
-            <div>
-              <label className="text-sm font-medium text-foreground mb-2 block">Land Image</label>
-              <div className="border-2 border-dashed border-border rounded-lg p-6 text-center hover:bg-muted/50 transition-colors cursor-pointer relative">
-                <input 
-                  type="file" 
-                  accept="image/*"
-                  onChange={(e) => setFile(e.target.files ? e.target.files[0] : null)}
-                  className="absolute inset-0 opacity-0 cursor-pointer"
+              <label className="text-sm font-medium text-foreground mb-2 block">Sale Price (ETH)</label>
+              <div className="relative">
+                <Input 
+                  type="number" 
+                  placeholder="e.g. 5" 
+                  value={sellPrice} 
+                  min="0"             
+                  step="1"            
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    if (parseFloat(val) < 0) return; 
+                    setSellPrice(val);
+                  }} 
+                  className="bg-input border-border text-foreground placeholder-muted-foreground pr-10 no-spinners"
                 />
-                <div className="flex flex-col items-center gap-2">
-                  <UploadCloud className="h-8 w-8 text-muted-foreground" />
-                  <p className="text-sm text-muted-foreground">
-                    {file ? file.name : "Click to upload image"}
-                  </p>
+                <div className="absolute inset-y-0 right-0 flex flex-col border-l border-border">
+                  <button 
+                    type="button"
+                    onClick={incrementPrice}
+                    className="flex-1 px-2 text-purple-500 hover:bg-muted/50 flex items-center justify-center rounded-tr-md transition-colors"
+                  >
+                    <ChevronUp className="h-4 w-4" />
+                  </button>
+                  <button 
+                    type="button"
+                    onClick={decrementPrice}
+                    className="flex-1 px-2 text-purple-500 hover:bg-muted/50 flex items-center justify-center border-t border-border rounded-br-md transition-colors"
+                  >
+                    <ChevronDown className="h-4 w-4" />
+                  </button>
                 </div>
               </div>
             </div>
 
-            <div className="flex gap-3 pt-4">
-              <Button variant="outline" className="flex-1 border-border" onClick={() => setShowMintModal(false)}>
+            <div className="bg-muted/30 p-4 rounded-lg border border-border">
+              <p className="text-xs text-muted-foreground mb-1">Transaction Info:</p>
+              <ul className="text-xs text-muted-foreground space-y-1 list-disc list-inside">
+                <li>Step 1: Approve Marketplace (Gas Fee)</li>
+                <li>Step 2: Create Listing (Gas Fee)</li>
+              </ul>
+            </div>
+
+            <div className="flex gap-3 pt-2">
+              <Button 
+                variant="outline" 
+                onClick={() => setShowSellModal(false)}
+                className="flex-1 bg-transparent border-2 border-gray-600 text-gray-300 hover:bg-gray-600/20 hover:border-gray-400 hover:text-white transition-all"
+              >
                 Cancel
               </Button>
               <Button 
-                onClick={handleMint} 
-                disabled={isMinting}
-                className="flex-1 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white"
+                onClick={confirmListing} 
+                disabled={isSelling || !sellPrice}
+                className="flex-1 bg-transparent border-2 border-purple-600 text-white hover:bg-purple-600/20 hover:border-purple-500 transition-all"
               >
-                {isMinting ? "Processing..." : "Mint Now"}
+                {isSelling ? "Processing..." : "Confirm Listing"}
               </Button>
             </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* --- SUCCESS MODAL --- */}
+      <Dialog open={showSuccessModal} onOpenChange={setShowSuccessModal}>
+        <DialogContent className="bg-card border-border max-w-sm text-center sm:rounded-2xl">
+          <div className="flex flex-col items-center justify-center gap-6 py-4">
+            <div className="h-20 w-20 rounded-full bg-green-500/10 flex items-center justify-center animate-in zoom-in duration-300">
+              <CheckCircle2 className="h-10 w-10 text-green-500" />
+            </div>
+            
+            <div className="space-y-2">
+              <DialogTitle className="text-xl font-bold text-foreground">Listing Successful!</DialogTitle>
+              <DialogDescription className="text-muted-foreground text-center">
+                Your land has been successfully listed on the marketplace.
+              </DialogDescription>
+            </div>
+
+            <Button 
+              onClick={() => setShowSuccessModal(false)}
+              className="w-full bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 text-white font-medium h-11"
+            >
+              Continue
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* --- ERROR MODAL --- */}
+      <Dialog open={errorModal.show} onOpenChange={(open) => setErrorModal(prev => ({ ...prev, show: open }))}>
+        <DialogContent className="bg-card border-red-900/50 max-w-sm text-center sm:rounded-2xl">
+          <div className="flex flex-col items-center justify-center gap-4 py-4">
+            <div className="h-16 w-16 rounded-full bg-red-500/10 flex items-center justify-center">
+              <X className="h-8 w-8 text-red-500" />
+            </div>
+            
+            <div className="space-y-2">
+              <DialogTitle className="text-xl font-bold text-red-500">Action Failed</DialogTitle>
+              <DialogDescription className="text-muted-foreground text-center break-words max-h-[200px] overflow-y-auto">
+                {errorModal.message}
+              </DialogDescription>
+            </div>
+
+            <Button 
+              onClick={() => setErrorModal({ show: false, message: '' })}
+              className="w-full bg-red-900/20 hover:bg-red-900/40 text-red-400 border border-red-900/50"
+            >
+              Close
+            </Button>
           </div>
         </DialogContent>
       </Dialog>
